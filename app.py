@@ -1,94 +1,82 @@
-import os
-import numpy as np
+import streamlit as st
 from PIL import Image
-from sklearn.model_selection import train_test_split
-from tqdm import tqdm
-from transformers import ViTForImageClassification, ViTFeatureExtractor
-from transformers import TrainingArguments, Trainer
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import torch.nn.functional as F
+class Net(nn.Module):
+    def __init__(self, num_classes):
+        super(Net, self).__init__()
+        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.fc1 = nn.Linear(64 * 32 * 32, 128)
+        self.fc2 = nn.Linear(128, num_classes)
 
-# Define directories
-train_dir = 'chest_xray/train'
-test_dir = 'chest_xray/test'
-categories = ['NORMAL', 'PNEUMONIA']
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = x.view(-1, 64 * 32 * 32)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
-def load_images_from_brain_folder(folder):
-    images = []
-    labels = []
-    for filename in tqdm(os.listdir(folder)):
-        img_path = os.path.join(folder, filename)
-        try:
-            img = Image.open(img_path).convert('RGB')
-            img = img.resize((224, 224))  # Resize to 224x224
-            images.append(np.array(img))
-            labels.append(1 if folder.endswith('yes') else 0)
-        except Exception as e:
-            print(f"Error loading image {img_path}: {e}")
-            continue
-    return images, labels
+# Load the complete model
+@st.cache_data()
+def load_model(num_classes):
+    model = Net(num_classes)
+    # model = torch.load('./models/medical_net.pth', map_location=torch.device('cpu'))
+    model.load_state_dict(torch.load('./models/medical_net.pth', map_location=torch.device('cpu')))
+    model.eval()
+    return model
 
-def load_images_form_chest_folder(folder,categories):
-    images = []
-    labels = []
-    for category in categories:
-        class_num = categories.index(category)
-        path = os.path.join(folder,category)
-        for img in tqdm(os.listdir(path)):
-            try:
-                img_path = os.path.join(path, img)
-                img = Image.open(img_path).convert('RGB')
-                img = img.resize((224, 224))  # Resize to 224x224
-                images.append(np.array(img))
-                labels.append(class_num)
-            except Exception as e:
-                pass
-    return images, labels
+@st.cache_resource
+def load_huggingface_model():
+    model_name = "facebook/bart-large-cnn"  # Using a summarization model for better generation
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    return tokenizer, model
+# Prediction function
+def predict(image, model,num_classes):
+    transform = transforms.Compose([
+        transforms.Resize((128, 128)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,))
+    ])
+    
+    image = transform(image).unsqueeze(0)  # Add batch dimension
+    with torch.no_grad():
+        outputs = model(image)
+        _, predicted = torch.max(outputs, 1)
+        diagnosis = classes[predicted.item()]
+    return diagnosis
 
+# Generate personalized response using Hugging Face model
+def generate_response(diagnosis, tokenizer, model):
+    input_text = f"The patient is diagnosed with {diagnosis}. Provide medical advice."
+    inputs = tokenizer.encode(input_text, return_tensors='pt')
+    outputs = model.generate(inputs, max_length=50, num_return_sequences=1)
+    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return response
 
-yes_images, yes_labels = load_images_from_brain_folder('.\\braintumor\\brain_tumor_dataset\yes')
-no_images, no_labels = load_images_from_brain_folder('.\\braintumor\\brain_tumor_dataset\\no')
-
-# Combine the data
-images = np.array(yes_images + no_images)
-labels = np.array(yes_labels + no_labels)
-
-# Normalize the images
-images = images / 255.0
-
-# Split the data
-X_train, X_test, y_train, y_test = train_test_split(images, labels, test_size=0.2, random_state=42)
-
-# Load pre-trained model and feature extractor
-model_name = "google/vit-base-patch16-224"
-feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
-model = ViTForImageClassification.from_pretrained(model_name, num_labels=2,ignore_mismatched_sizes=True)
-
-# Preprocess the images
-def preprocess_images(images):
-    return feature_extractor(images, return_tensors='pt')['pixel_values']
-
-X_train_processed = preprocess_images(X_train)
-X_test_processed = preprocess_images(X_test)
-
-#train the model
-#define training arguments
-training_args = TrainingArguments(
-    output_dir='./results',
-    num_train_epochs=3,
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=16,
-    warmup_steps=500,
-    weight_decay=0.01,
-    logging_dir='./logs',
-    logging_steps=10,
-)
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=(X_train_processed, y_train),
-    eval_dataset=(X_test_processed, y_test)
-)
-trainer.train()
-
-#evaluate the results
-eval_result = trainer.evaluate()
-print(f"Test accuracy: {eval_result['eval_accuracy']:.2f}")
+# Streamlit app
+st.title("MedAlgen")
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+if uploaded_file is not None:
+    image = Image.open(uploaded_file).convert('RGB')
+    st.image(image, caption='Uploaded Image.', use_column_width=True)
+    
+    # Load models
+    num_classes = 3  # Number of classes: breast_cancer, pneumonia, healthy
+    classes = ['breast_cancer', 'pneumonia', 'healthy']
+    pytorch_model = load_model(num_classes)
+    tokenizer, huggingface_model = load_huggingface_model()
+    
+    # Make a prediction
+    diagnosis = predict(image, pytorch_model, classes)
+    st.write(f"Diagnosis: {diagnosis}")
+    
+    # Generate personalized response
+    response = generate_response(diagnosis, tokenizer, huggingface_model)
+    st.write(f"Personalized Response: {response}")

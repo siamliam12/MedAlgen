@@ -11,6 +11,32 @@ import torch.optim as optim
 from transformers import pipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import streamlit as st
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+
+# Authenticate and create the PyDrive client
+gauth = GoogleAuth()
+gauth.LocalWebserverAuth()  # Creates local webserver and automatically handles authentication
+drive = GoogleDrive(gauth)
+
+# Function to list all files in a folder
+def list_files_in_folder(folder_id):
+    file_list = drive.ListFile({'q': f"'{folder_id}' in parents and trashed=false"}).GetList()
+    return file_list
+
+# Function to get direct download link
+def get_direct_link(file):
+    return f"https://drive.google.com/uc?id={file['id']}"
+# Replace with your actual folder IDs
+yes_folder_id = '1pj0E5ju9KdbXA3sI3zJBstLcYsrm9l2Q'
+no_folder_id = '1Hlqbr6qpxowYCBlUGdm57jS1i_u'
+
+# List and get direct links
+yes_files = list_files_in_folder(yes_folder_id)
+no_files = list_files_in_folder(no_folder_id)
+
+yes_links = [get_direct_link(file) for file in yes_files]
+no_links = [get_direct_link(file) for file in no_files]
 
 class MedicalDataset(Dataset):
     def __init__(self,image_path,labels,transform=None):
@@ -42,26 +68,26 @@ def load_images_from_folder(folder, label):
             continue
     return image_paths, labels
 
+# Function to load image from URL
+def load_image_from_url(url):
+    response = requests.get(url)
+    img = Image.open(BytesIO(response.content)).convert('RGB')
+    return img
+
 # Define directories
-yes_dir = '.\\braintumor\yes'
-no_dir = '.\\braintumor\\no'
-# Define directories for xrays
-xray_yes_dir = '.\chest_xray\chest_xray\\train\PNEUMONIA'
-xray_no_dir = '.\chest_xray\chest_xray\\train\\NORMAL'
+# yes_dir = './yes'
+# no_dir = './no'
 
-# Load images and labels
-yes_image_paths, yes_labels = load_images_from_folder(yes_dir, label=1)
-no_image_paths, no_labels = load_images_from_folder(no_dir, label=0)
-# Load images and labels for xrays
-xray_yes_image_paths, xray_yes_labels = load_images_from_folder(xray_yes_dir, label=1)
-xray_no_image_paths, xray_no_labels = load_images_from_folder(xray_no_dir, label=0)
+# # Load images and labels
+# yes_image_paths, yes_labels = load_images_from_folder(yes_dir, label=1)
+# no_image_paths, no_labels = load_images_from_folder(no_dir, label=0)
 
-# Combine the data
-all_image_paths = yes_image_paths + no_image_paths + xray_yes_image_paths + xray_no_image_paths
-all_labels = yes_labels + no_labels + xray_yes_labels + xray_no_labels
+# # Combine the data
+# all_image_paths = yes_image_paths + no_image_paths 
+# all_labels = yes_labels + no_labels 
 
-# Split the data into train and test sets
-X_train, X_test, y_train, y_test = train_test_split(all_image_paths, all_labels, test_size=0.3, random_state=42)
+# # Split the data into train and test sets
+# X_train, X_test, y_train, y_test = train_test_split(all_image_paths, all_labels, test_size=0.3, random_state=42)
 
 # Define transformations
 transform = transforms.Compose([
@@ -70,12 +96,12 @@ transform = transforms.Compose([
 ])
 
 # Create datasets
-train_dataset = MedicalDataset(X_train, y_train, transform=transform)
-test_dataset = MedicalDataset(X_test, y_test, transform=transform)
+# train_dataset = MedicalDataset(X_train, y_train, transform=transform)
+# test_dataset = MedicalDataset(X_test, y_test, transform=transform)
 
-# Create dataloaders
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+# # Create dataloaders
+# train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+# test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
 class SimpleCNN(nn.Module):
     def __init__(self):
@@ -101,31 +127,63 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 
-# Training loop
+# # Training loop
+# for epoch in range(10):
+#     model.train()
+#     running_loss = 0.0
+#     for inputs, labels in train_loader:
+#         inputs, labels = inputs.to(device), labels.to(device)
+#         optimizer.zero_grad()
+#         outputs = model(inputs)
+#         loss = criterion(outputs, labels)
+#         loss.backward()
+#         optimizer.step()
+#         running_loss += loss.item()
+#     print(f"Epoch {epoch+1}, Loss: {running_loss/len(train_loader)}")
+# Training loop (simplified for example)
 for epoch in range(10):
     model.train()
     running_loss = 0.0
-    for inputs, labels in train_loader:
-        inputs, labels = inputs.to(device), labels.to(device)
+    for link in yes_links + no_links:
+        img = load_image_from_url(link)
+        label = 1 if link in yes_links else 0
+        img = transform(img).unsqueeze(0).to(device)
+        label = torch.tensor([label]).to(device)
+        
         optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
+        outputs = model(img)
+        loss = criterion(outputs, label)
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-    print(f"Epoch {epoch+1}, Loss: {running_loss/len(train_loader)}")
-
+    print(f"Epoch {epoch+1}, Loss: {running_loss/len(yes_links + no_links)}")
 # Evaluate the model
+# model.eval()
+# correct = 0
+# total = 0
+# with torch.no_grad():
+#     for inputs, labels in test_loader:
+#         inputs, labels = inputs.to(device), labels.to(device)
+#         outputs = model(inputs)
+#         _, predicted = torch.max(outputs.data, 1)
+#         total += labels.size(0)
+#         correct += (predicted == labels).sum().item()
+# print(f'Accuracy: {100 * correct / total}%')
+# Evaluate the model (simplified)
 model.eval()
 correct = 0
 total = 0
 with torch.no_grad():
-    for inputs, labels in test_loader:
-        inputs, labels = inputs.to(device), labels.to(device)
-        outputs = model(inputs)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+    for link in yes_links + no_links:
+        img = load_image_from_url(link)
+        label = 1 if link in yes_links else 0
+        img = transform(img).unsqueeze(0).to(device)
+        label = torch.tensor([label]).to(device)
+        
+        outputs = model(img)
+        _, predicted = torch.max(outputs, 1)
+        total += label.size(0)
+        correct += (predicted == label).sum().item()
 print(f'Accuracy: {100 * correct / total}%')
 
 # Load the pre-trained model
