@@ -69,7 +69,7 @@ if uploaded_file is not None:
     
     # Load models
     num_classes = 3  # Number of classes: breast_cancer, pneumonia, healthy
-    classes = ['breast_cancer', 'pneumonia', 'healthy']
+    classes = ['Brain Tumor', 'pneumonia', 'healthy']
     pytorch_model = load_model(num_classes)
     tokenizer, huggingface_model = load_huggingface_model()
     
